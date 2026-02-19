@@ -1,25 +1,30 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
   <title>PDF OCR + Boxes + Depth Tool</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="styles.css"/>
 
-  <!-- ✅ PDF.js UMD (LEGACY) -->
-<script src="https://unpkg.com/pdfjs-dist@4.6.82/legacy/build/pdf.min.js"></script>
-<script>
-  // set worker (same origin CDN)
-  window.addEventListener("load", () => {
-    if (!window.pdfjsLib) {
-      alert("PDF.js did not load. Check network tab for pdf.min.js");
-      return;
-    }
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://unpkg.com/pdfjs-dist@4.6.82/legacy/build/pdf.worker.min.js";
-  });
-</script>
+  <!-- ✅ PDF.js UMD (creates global pdfjsLib) -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+  <script>
+    // Make worker subfolder-safe and reliable
+    window.addEventListener("load", () => {
+      if (!window.pdfjsLib) {
+        console.error("PDF.js failed to load: pdfjsLib is missing.");
+        return;
+      }
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+      console.log("PDF.js loaded OK:", pdfjsLib.version);
+    });
+  </script>
+
+  <!-- OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 </head>
+
 
 <body>
   <header class="topbar">
