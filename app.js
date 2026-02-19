@@ -4,7 +4,7 @@
  * - OCR uses Tesseract.js on the rendered page image
  *
  * Coordinates:
- * - All box rects are stored in "page pixels" (same coordinate space as pdfCanvas at current render scale).
+ * - All box rects are stored in "page pixels" (same space as pdfCanvas at render scale).
  */
 
 const els = {
@@ -61,20 +61,20 @@ let pdfBytes = null;
 let pageNum = 1;
 let pageCount = 0;
 
-// Render scale for PDF page (separate from overlay "view zoom")
-let renderScale = 2.0; // high-ish for OCR accuracy; auto-adjust with UI zoom
+// Render scale for PDF page (higher = better OCR, slower)
+let renderScale = 2.2;
 
-// Overlay view zoom (purely visual)
+// Overlay view zoom (visual zoom, CSS)
 let viewZoom = 1.2;
 
 // Boxes per page
-// pagesBoxes[pageNum] = [{id,type,rect:{x,y,w,h},text,conf,depth}]
+// pagesBoxes.get(pageNum) = [{id,type,rect:{x,y,w,h},text,conf,depth}]
 const pagesBoxes = new Map();
 
 let selectedId = null;
 let drawMode = false;
 
-// Drawing state
+// Manual draw state
 let isDrawing = false;
 let drawStart = null;
 let tempRect = null;
@@ -122,17 +122,15 @@ function setViewZoomFromUI() {
 }
 
 function applyCanvasZoom() {
-  // We "zoom" by CSS transform so the page stays crisp and overlay matches exactly.
-  // Important: both canvases get the same transform.
   const scale = viewZoom;
+
+  // Transform both canvases identically
   els.pdfCanvas.style.transformOrigin = "top left";
   els.overlayCanvas.style.transformOrigin = "top left";
   els.pdfCanvas.style.transform = `scale(${scale})`;
   els.overlayCanvas.style.transform = `scale(${scale})`;
 
-  // Update stage scroll area: because CSS transform doesn't change layout size,
-  // we set wrapper size by updating a spacer via canvas width/height and CSS margin.
-  // Easiest: set a CSS width/height on canvases equal to pixel size * scale (layout size).
+  // Fix layout size (otherwise scroll area won't match)
   const w = els.pdfCanvas.width;
   const h = els.pdfCanvas.height;
   els.pdfCanvas.style.width = `${w * scale}px`;
@@ -242,7 +240,7 @@ function drawBox(b) {
 
   if (els.showTextChk.checked) {
     const label = isOCR ? `${(b.text || "").trim()}` : `${(b.text || "manual").trim()}`;
-    const depthTag = `d=${b.depth}`;
+    const depthTag = `d=${b.depth ?? 0}`;
     const confTag = isOCR && typeof b.conf === "number" ? ` c=${Math.round(b.conf)}` : "";
     const tag = `${depthTag}${confTag}`;
 
@@ -319,28 +317,52 @@ function hitTest(pt) {
   return null;
 }
 
-// Convert mouse point to "page pixels" (taking CSS zoom into account)
+// Convert mouse point to "page pixels" (accounts for CSS zoom)
 function getMousePagePos(evt) {
   const rect = els.overlayCanvas.getBoundingClientRect();
   const xCss = evt.clientX - rect.left;
   const yCss = evt.clientY - rect.top;
-  // Because we CSS-scaled the canvas, convert back by dividing by viewZoom
   return { x: xCss / viewZoom, y: yCss / viewZoom };
+}
+
+/* -------------------- File reading with progress (FIX) -------------------- */
+
+function readFileAsArrayBufferWithProgress(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(e.loaded / e.total);
+    };
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 /* -------------------- PDF loading + rendering -------------------- */
 
 async function loadPdfFromBytes(bytes) {
-  // Configure worker
+  // Ensure worker is configured BEFORE calling getDocument
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.js";
 
-  pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+  // These flags help with PDFs that hang on stream/autofetch
+  const loadingTask = pdfjsLib.getDocument({
+    data: bytes,
+    disableStream: true,
+    disableAutoFetch: true,
+    // cMapUrl / standardFontDataUrl are optional; CDN use is okay without these for most PDFs.
+  });
+
+  pdfDoc = await loadingTask.promise;
   pageCount = pdfDoc.numPages;
   pageNum = 1;
-  updatePageLabel();
 
-  setStatus(`PDF loaded. ${pageCount} page(s). Click Render Page.`, 0);
+  updatePageLabel();
+  setStatus(`PDF loaded. ${pageCount} page(s). Rendering page 1…`, 0);
+
   enableUI(true);
   els.renderBtn.disabled = false;
   els.runOcrBtn.disabled = true;
@@ -357,13 +379,13 @@ async function loadPdfFromBytes(bytes) {
 
 async function renderPage() {
   if (!pdfDoc) return;
+
   setStatus(`Rendering page ${pageNum}…`, 0);
 
   const page = await pdfDoc.getPage(pageNum);
 
-  // Adjust render scale a bit using UI zoom so text stays readable for OCR
-  // (OCR likes higher resolution; 2.0–3.0 is usually good)
-  renderScale = Math.max(1.5, Math.min(3.0, 1.7 + (viewZoom - 1.0)));
+  // A good OCR scale: auto based on viewZoom, clamped
+  renderScale = Math.max(1.8, Math.min(3.2, 2.1 + (viewZoom - 1.0)));
 
   const viewport = page.getViewport({ scale: renderScale });
 
@@ -372,16 +394,11 @@ async function renderPage() {
   els.overlayCanvas.width = els.pdfCanvas.width;
   els.overlayCanvas.height = els.pdfCanvas.height;
 
-  // Position overlay canvas exactly on top of pdf canvas (same margin)
-  // In CSS we used absolute top/left 16px, matching margin of canvases.
-  // Keep overlay margin visually same as pdf canvas margin:
-  els.overlayCanvas.style.margin = els.pdfCanvas.style.margin;
-
-  // Render
   pdfCtx.clearRect(0, 0, els.pdfCanvas.width, els.pdfCanvas.height);
+
+  // Render PDF page bitmap
   await page.render({ canvasContext: pdfCtx, viewport }).promise;
 
-  // Reset OCR text for page unless already present
   if (!pagesBoxes.has(pageNum)) pagesBoxes.set(pageNum, []);
 
   applyCanvasZoom();
@@ -404,7 +421,7 @@ async function renderPage() {
 async function runOCRThisPage() {
   if (!pdfDoc) return;
 
-  // Make sure page is rendered before OCR (we OCR the rendered bitmap)
+  // Ensure rendered
   if (els.pdfCanvas.width === 0 || els.pdfCanvas.height === 0) {
     await renderPage();
   }
@@ -436,7 +453,6 @@ async function runOCRThisPage() {
     });
 
     const words = (result?.data?.words || []).filter(w => (w?.bbox && w.text && w.text.trim().length));
-
     for (const w of words) {
       const x0 = w.bbox.x0, y0 = w.bbox.y0, x1 = w.bbox.x1, y1 = w.bbox.y1;
       boxes.push({
@@ -456,7 +472,7 @@ async function runOCRThisPage() {
     redrawOverlay();
   } catch (err) {
     console.error(err);
-    setStatus("OCR failed. Check console for details.", 0);
+    setStatus("OCR failed. Open DevTools Console for details.", 0);
   } finally {
     els.runOcrBtn.disabled = false;
   }
@@ -474,7 +490,8 @@ function exportJSONPage() {
     render: {
       width: els.pdfCanvas.width,
       height: els.pdfCanvas.height,
-      renderScale
+      renderScale,
+      viewZoom
     },
     ocrText: els.ocrText.value || "",
     boxes: boxes.map(b => ({
@@ -539,8 +556,7 @@ els.overlayCanvas.addEventListener("mousedown", (evt) => {
 });
 
 els.overlayCanvas.addEventListener("mousemove", (evt) => {
-  if (!pdfDoc) return;
-  if (!isDrawing) return;
+  if (!pdfDoc || !isDrawing) return;
 
   const pt = getMousePagePos(evt);
   const r = normalizeRect(drawStart, pt);
@@ -549,8 +565,7 @@ els.overlayCanvas.addEventListener("mousemove", (evt) => {
 });
 
 els.overlayCanvas.addEventListener("mouseup", () => {
-  if (!pdfDoc) return;
-  if (!isDrawing) return;
+  if (!pdfDoc || !isDrawing) return;
 
   isDrawing = false;
 
@@ -566,7 +581,7 @@ els.overlayCanvas.addEventListener("mouseup", () => {
       rect: r,
       text: "manual",
       conf: null,
-      depth: 1, // default above OCR
+      depth: 1,
     };
     boxes.push(newBox);
     updateCounts();
@@ -638,12 +653,21 @@ els.pdfInput.addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
 
-  setStatus("Reading PDF bytes…", 0);
-  pdfBytes = await file.arrayBuffer();
-  await loadPdfFromBytes(pdfBytes);
+  try {
+    setStatus("Reading PDF bytes… 0%", 0);
 
-  // auto-render first page
-  await renderPage();
+    pdfBytes = await readFileAsArrayBufferWithProgress(file, (p) => {
+      setStatus(`Reading PDF bytes… ${Math.round(p * 100)}%`, p);
+    });
+
+    setStatus("Loading PDF into PDF.js…", 0);
+    await loadPdfFromBytes(pdfBytes);
+
+    await renderPage();
+  } catch (err) {
+    console.error(err);
+    setStatus("Failed to load PDF. Open DevTools Console.", 0);
+  }
 });
 
 els.prevPageBtn.addEventListener("click", async () => {
@@ -672,7 +696,6 @@ els.clearManualBtn.addEventListener("click", clearManualPage);
 els.clearOcrBtn.addEventListener("click", clearOcrPage);
 
 els.zoomRange.addEventListener("input", setViewZoomFromUI);
-
 els.showOcrChk.addEventListener("change", redrawOverlay);
 els.showManualChk.addEventListener("change", redrawOverlay);
 els.showTextChk.addEventListener("change", redrawOverlay);
@@ -687,6 +710,7 @@ els.copyTextBtn.addEventListener("click", async () => {
 });
 
 /* -------------------- Init -------------------- */
+
 enableUI(false);
 setDrawMode(false);
 setViewZoomFromUI();
