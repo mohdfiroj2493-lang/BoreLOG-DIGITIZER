@@ -7,14 +7,18 @@
   <link rel="stylesheet" href="./styles.css" />
 
   <!-- ✅ PDF.js UMD (LEGACY) -->
-  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist-legacy@4.6.82/build/pdf.min.js"></script>
-  <script>
+<script src="https://unpkg.com/pdfjs-dist@4.6.82/legacy/build/pdf.min.js"></script>
+<script>
+  // set worker (same origin CDN)
+  window.addEventListener("load", () => {
+    if (!window.pdfjsLib) {
+      alert("PDF.js did not load. Check network tab for pdf.min.js");
+      return;
+    }
     pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdn.jsdelivr.net/npm/pdfjs-dist-legacy@4.6.82/build/pdf.worker.min.js";
-  </script>
-
-  <!-- Tesseract.js -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+      "https://unpkg.com/pdfjs-dist@4.6.82/legacy/build/pdf.worker.min.js";
+  });
+</script>
 </head>
 
 <body>
@@ -175,7 +179,9 @@
       </div>
     </aside>
   </main>
-
+<script>
+  console.log("pdfjsLib exists?", !!window.pdfjsLib);
+</script>
   <script src="./app.js"></script>
 </body>
 </html>
