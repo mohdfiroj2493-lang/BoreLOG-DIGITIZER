@@ -90,9 +90,7 @@
       </div>
 
       <div id="stage" class="stage" tabindex="0">
-        <!-- background rendered PDF page -->
         <canvas id="pdfCanvas" class="canvas"></canvas>
-        <!-- overlay for boxes -->
         <canvas id="overlayCanvas" class="canvas overlay"></canvas>
       </div>
 
@@ -100,9 +98,9 @@
         <b>Tips:</b>
         <ul>
           <li>Click a box to select it.</li>
-          <li>When <b>Draw Mode</b> is On: click-drag to create a manual box.</li>
-          <li><b>Depth</b> controls render order (higher draws on top).</li>
-          <li>Export JSON is in <b>page pixel coordinates</b> of the rendered page.</li>
+          <li>Draw Mode On: click-drag to create manual boxes.</li>
+          <li><b>Depth</b> controls draw order (higher draws on top).</li>
+          <li>Export JSON uses <b>page pixel coordinates</b> (same as rendered page).</li>
         </ul>
       </div>
     </section>
@@ -168,9 +166,7 @@
           <div><span class="badge">OCR</span> <span id="ocrCount" class="mono">0</span></div>
           <div><span class="badge manual">Manual</span> <span id="manualCount" class="mono">0</span></div>
         </div>
-        <div class="help">
-          Export includes OCR + manual boxes for the current page.
-        </div>
+        <div class="help">Export includes OCR + manual boxes for current page.</div>
       </div>
     </aside>
   </main>
