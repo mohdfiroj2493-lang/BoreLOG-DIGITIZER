@@ -6,12 +6,19 @@
   <title>PDF OCR + Boxes + Depth (PDF.js + Tesseract.js)</title>
   <link rel="stylesheet" href="./styles.css" />
 
-  <!-- PDF.js -->
+  <!-- PDF.js (library) -->
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.js"></script>
+
+  <!-- IMPORTANT: Worker served locally from your GitHub Pages site -->
+  <script>
+    // Make sure pdf.worker.min.js exists next to index.html in your repo
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.min.js";
+  </script>
 
   <!-- Tesseract.js -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
+
 <body>
   <header class="topbar">
     <div class="brand">
@@ -100,7 +107,7 @@
           <li>Click a box to select it.</li>
           <li>Draw Mode On: click-drag to create manual boxes.</li>
           <li><b>Depth</b> controls draw order (higher draws on top).</li>
-          <li>Export JSON uses <b>page pixel coordinates</b> (same as rendered page).</li>
+          <li>Export JSON uses <b>page pixel coordinates</b>.</li>
         </ul>
       </div>
     </section>
