@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF OCR + Boxes + Depth (PDF.js + Tesseract.js)</title>
+  <link rel="stylesheet" href="./styles.css" />
+
+  <!-- PDF.js -->
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.js"></script>
+
+  <!-- Tesseract.js -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="dot"></div>
+      <div>
+        <div class="title">PDF OCR + Box + Depth Tool</div>
+        <div class="subtitle">Upload PDF → render page → OCR → draw/select boxes → set depth → export</div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <label class="btn">
+        <input id="pdfInput" type="file" accept="application/pdf" hidden />
+        Upload PDF
+      </label>
+
+      <div class="pill">
+        <button id="prevPageBtn" class="btn" disabled>Prev</button>
+        <span class="mono" id="pageLabel">Page - / -</span>
+        <button id="nextPageBtn" class="btn" disabled>Next</button>
+      </div>
+
+      <select id="langSelect" class="select" title="OCR language">
+        <option value="eng" selected>English (eng)</option>
+        <option value="spa">Spanish (spa)</option>
+        <option value="fra">French (fra)</option>
+        <option value="deu">German (deu)</option>
+        <option value="ita">Italian (ita)</option>
+        <option value="por">Portuguese (por)</option>
+        <option value="hin">Hindi (hin)</option>
+      </select>
+
+      <button id="renderBtn" class="btn primary" disabled>Render Page</button>
+      <button id="runOcrBtn" class="btn primary" disabled>Run OCR (this page)</button>
+      <button id="toggleDrawBtn" class="btn" disabled>Draw Mode: Off</button>
+      <button id="exportBtn" class="btn" disabled>Export JSON (page)</button>
+      <button id="clearManualBtn" class="btn" disabled>Clear Manual</button>
+      <button id="clearOcrBtn" class="btn" disabled>Clear OCR</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="canvasPanel">
+      <div class="canvasHeader">
+        <div class="row">
+          <div class="pill">
+            <span class="label">Zoom</span>
+            <input id="zoomRange" type="range" min="50" max="250" value="120" />
+            <span id="zoomLabel" class="mono">120%</span>
+          </div>
+
+          <label class="pill">
+            <input id="showOcrChk" type="checkbox" checked />
+            <span>Show OCR boxes</span>
+          </label>
+
+          <label class="pill">
+            <input id="showManualChk" type="checkbox" checked />
+            <span>Show manual boxes</span>
+          </label>
+
+          <label class="pill">
+            <input id="showTextChk" type="checkbox" checked />
+            <span>Show OCR text</span>
+          </label>
+        </div>
+
+        <div class="row right">
+          <div class="status">
+            <div class="mono" id="statusText">Upload a PDF to begin.</div>
+            <div class="progressWrap">
+              <div class="progressBar" id="progressBar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="stage" class="stage" tabindex="0">
+        <!-- background rendered PDF page -->
+        <canvas id="pdfCanvas" class="canvas"></canvas>
+        <!-- overlay for boxes -->
+        <canvas id="overlayCanvas" class="canvas overlay"></canvas>
+      </div>
+
+      <div class="hint">
+        <b>Tips:</b>
+        <ul>
+          <li>Click a box to select it.</li>
+          <li>When <b>Draw Mode</b> is On: click-drag to create a manual box.</li>
+          <li><b>Depth</b> controls render order (higher draws on top).</li>
+          <li>Export JSON is in <b>page pixel coordinates</b> of the rendered page.</li>
+        </ul>
+      </div>
+    </section>
+
+    <aside class="sidePanel">
+      <div class="panel">
+        <div class="panelTitle">Selected Box</div>
+
+        <div class="field">
+          <label>Type</label>
+          <input id="selType" class="input" disabled />
+        </div>
+
+        <div class="field">
+          <label>Text</label>
+          <input id="selText" class="input" placeholder="(manual box label)" />
+          <div class="help">OCR boxes are read-only; manual boxes are editable.</div>
+        </div>
+
+        <div class="field">
+          <label>Depth</label>
+          <input id="selDepth" type="number" class="input" value="0" step="1" />
+          <div class="help">Higher depth draws on top.</div>
+        </div>
+
+        <div class="field grid2">
+          <div>
+            <label>X</label>
+            <input id="selX" class="input mono" disabled />
+          </div>
+          <div>
+            <label>Y</label>
+            <input id="selY" class="input mono" disabled />
+          </div>
+          <div>
+            <label>W</label>
+            <input id="selW" class="input mono" disabled />
+          </div>
+          <div>
+            <label>H</label>
+            <input id="selH" class="input mono" disabled />
+          </div>
+        </div>
+
+        <div class="row gap">
+          <button id="deleteBtn" class="btn danger" disabled>Delete</button>
+          <button id="bringFrontBtn" class="btn" disabled>+Depth</button>
+          <button id="sendBackBtn" class="btn" disabled>-Depth</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panelTitle">OCR Output (this page)</div>
+        <textarea id="ocrText" class="textarea" placeholder="OCR text will appear here..." spellcheck="false"></textarea>
+        <div class="row gap">
+          <button id="copyTextBtn" class="btn" disabled>Copy Text</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panelTitle">Boxes</div>
+        <div class="stats">
+          <div><span class="badge">OCR</span> <span id="ocrCount" class="mono">0</span></div>
+          <div><span class="badge manual">Manual</span> <span id="manualCount" class="mono">0</span></div>
+        </div>
+        <div class="help">
+          Export includes OCR + manual boxes for the current page.
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
