@@ -2,37 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>PDF OCR + Boxes + Depth Tool</title>
+  <title>PDF Bore Log Extractor (Header + Layers + SPT)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="stylesheet" href="styles.css"/>
 
-  <!-- ✅ PDF.js UMD (creates global pdfjsLib) -->
+  <!-- PDF.js UMD (global pdfjsLib) -->
   <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
   <script>
-    // Make worker subfolder-safe and reliable
-    window.addEventListener("load", () => {
-      if (!window.pdfjsLib) {
-        console.error("PDF.js failed to load: pdfjsLib is missing.");
-        return;
-      }
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-      console.log("PDF.js loaded OK:", pdfjsLib.version);
-    });
+    // Set worker (required)
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
   </script>
 
   <!-- OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 </head>
 
-
 <body>
   <header class="topbar">
     <div class="brand">
       <div class="dot"></div>
       <div>
-        <div class="title">PDF OCR + Box + Depth Tool</div>
-        <div class="subtitle">Upload PDF → render page → OCR → draw/select boxes → set depth → export</div>
+        <div class="title">PDF Bore Log Extractor</div>
+        <div class="subtitle">Draw ROIs → Extract Header + Layers + SPT → Export JSON</div>
       </div>
     </div>
 
@@ -43,27 +35,36 @@
       </label>
 
       <div class="pill">
-        <button id="prevPageBtn" class="btn" disabled>Prev</button>
+        <button id="prevBtn" class="btn" disabled>Prev</button>
         <span class="mono" id="pageLabel">Page - / -</span>
-        <button id="nextPageBtn" class="btn" disabled>Next</button>
+        <button id="nextBtn" class="btn" disabled>Next</button>
       </div>
 
-      <select id="langSelect" class="select" title="OCR language">
+      <div class="pill">
+        <span>Total Depth (ft)</span>
+        <input id="totalDepth" class="input small mono" type="number" value="36" step="0.1" />
+      </div>
+
+      <select id="langSelect" class="select">
         <option value="eng" selected>English (eng)</option>
-        <option value="spa">Spanish (spa)</option>
-        <option value="fra">French (fra)</option>
-        <option value="deu">German (deu)</option>
-        <option value="ita">Italian (ita)</option>
-        <option value="por">Portuguese (por)</option>
-        <option value="hin">Hindi (hin)</option>
       </select>
 
-      <button id="renderBtn" class="btn primary" disabled>Render Page</button>
-      <button id="runOcrBtn" class="btn primary" disabled>Run OCR (this page)</button>
+      <button id="renderBtn" class="btn primary" disabled>Render</button>
+
+      <div class="pill">
+        <span class="mono">ROI Type</span>
+        <select id="roiType" class="select">
+          <option value="header">HEADER</option>
+          <option value="desc" selected>DESCRIPTION</option>
+          <option value="spt">SPT</option>
+        </select>
+      </div>
+
       <button id="toggleDrawBtn" class="btn" disabled>Draw Mode: Off</button>
-      <button id="exportBtn" class="btn" disabled>Export JSON (page)</button>
-      <button id="clearManualBtn" class="btn" disabled>Clear Manual</button>
-      <button id="clearOcrBtn" class="btn" disabled>Clear OCR</button>
+
+      <button id="extractBtn" class="btn primary" disabled>Extract (this page)</button>
+      <button id="exportBtn" class="btn" disabled>Export JSON</button>
+      <button id="clearRoiBtn" class="btn" disabled>Clear ROIs (page)</button>
     </div>
   </header>
 
@@ -72,24 +73,14 @@
       <div class="canvasHeader">
         <div class="row">
           <div class="pill">
-            <span class="label">Zoom</span>
+            <span>Zoom</span>
             <input id="zoomRange" type="range" min="50" max="250" value="120" />
             <span id="zoomLabel" class="mono">120%</span>
           </div>
 
           <label class="pill">
-            <input id="showOcrChk" type="checkbox" checked />
-            <span>Show OCR boxes</span>
-          </label>
-
-          <label class="pill">
-            <input id="showManualChk" type="checkbox" checked />
-            <span>Show manual boxes</span>
-          </label>
-
-          <label class="pill">
-            <input id="showTextChk" type="checkbox" checked />
-            <span>Show OCR text</span>
+            <input id="showRoiChk" type="checkbox" checked />
+            <span>Show ROIs</span>
           </label>
         </div>
 
@@ -103,90 +94,48 @@
         </div>
       </div>
 
-      <div id="stage" class="stage" tabindex="0">
+      <div id="stage" class="stage">
         <canvas id="pdfCanvas" class="canvas"></canvas>
         <canvas id="overlayCanvas" class="canvas overlay"></canvas>
       </div>
 
       <div class="hint">
-        <b>Tips:</b>
-        <ul>
-          <li>Click a box to select it.</li>
-          <li>Draw Mode On: click-drag to create manual boxes.</li>
-          <li><b>Depth</b> controls draw order (higher draws on top).</li>
-          <li>Export JSON uses page pixel coordinates.</li>
-        </ul>
+        <b>How to use:</b>
+        <ol>
+          <li>Upload PDF → Render</li>
+          <li>Turn Draw Mode ON</li>
+          <li>Select ROI Type (HEADER / DESCRIPTION / SPT) and draw one box for each</li>
+          <li>Description ROI must cover depth from 0 → Total depth (e.g., 36 ft)</li>
+          <li>Click “Extract (this page)” then “Export JSON”</li>
+        </ol>
       </div>
     </section>
 
     <aside class="sidePanel">
       <div class="panel">
-        <div class="panelTitle">Selected Box</div>
-
+        <div class="panelTitle">Selected ROI</div>
         <div class="field">
           <label>Type</label>
-          <input id="selType" class="input" disabled />
+          <input id="selType" class="input mono" disabled />
         </div>
-
-        <div class="field">
-          <label>Text</label>
-          <input id="selText" class="input" placeholder="(manual box label)" />
-          <div class="help">OCR boxes are read-only; manual boxes are editable.</div>
-        </div>
-
-        <div class="field">
-          <label>Depth</label>
-          <input id="selDepth" type="number" class="input" value="0" step="1" />
-          <div class="help">Higher depth draws on top.</div>
-        </div>
-
         <div class="field grid2">
-          <div>
-            <label>X</label>
-            <input id="selX" class="input mono" disabled />
-          </div>
-          <div>
-            <label>Y</label>
-            <input id="selY" class="input mono" disabled />
-          </div>
-          <div>
-            <label>W</label>
-            <input id="selW" class="input mono" disabled />
-          </div>
-          <div>
-            <label>H</label>
-            <input id="selH" class="input mono" disabled />
-          </div>
+          <div><label>X</label><input id="selX" class="input mono" disabled /></div>
+          <div><label>Y</label><input id="selY" class="input mono" disabled /></div>
+          <div><label>W</label><input id="selW" class="input mono" disabled /></div>
+          <div><label>H</label><input id="selH" class="input mono" disabled /></div>
         </div>
-
         <div class="row gap">
-          <button id="deleteBtn" class="btn danger" disabled>Delete</button>
-          <button id="bringFrontBtn" class="btn" disabled>+Depth</button>
-          <button id="sendBackBtn" class="btn" disabled>-Depth</button>
+          <button id="deleteBtn" class="btn danger" disabled>Delete ROI</button>
         </div>
       </div>
 
       <div class="panel">
-        <div class="panelTitle">OCR Output (this page)</div>
-        <textarea id="ocrText" class="textarea" placeholder="OCR text will appear here..." spellcheck="false"></textarea>
-        <div class="row gap">
-          <button id="copyTextBtn" class="btn" disabled>Copy Text</button>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panelTitle">Boxes</div>
-        <div class="stats">
-          <div><span class="badge">OCR</span> <span id="ocrCount" class="mono">0</span></div>
-          <div><span class="badge manual">Manual</span> <span id="manualCount" class="mono">0</span></div>
-        </div>
-        <div class="help">Export includes OCR + manual boxes for current page.</div>
+        <div class="panelTitle">Extracted Output (this page)</div>
+        <textarea id="outputText" class="textarea" placeholder="Extracted JSON preview will appear here..." spellcheck="false"></textarea>
       </div>
     </aside>
   </main>
-<script>
-  console.log("pdfjsLib exists?", !!window.pdfjsLib);
-</script>
-  <script src="./app.js"></script>
+
+  <script src="app.js"></script>
 </body>
 </html>
