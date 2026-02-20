@@ -1,27 +1,25 @@
-/* GitHub Pages safe PDF OCR + Boxes + Depth Tool
- * Worker is set in index.html using a subfolder-safe URL.
- * This file shows real PDF.js error messages in the status bar.
- */
+// Bore Log Extractor
+// ROIs per page: header, desc (0..TotalDepth), spt
+// Output: header fields + layers (from/to + OCR text) + spt (depth + N)
+// PDF.js: v3.11.174 (global pdfjsLib), Tesseract v5
 
 const els = {
   pdfInput: document.getElementById("pdfInput"),
-  langSelect: document.getElementById("langSelect"),
-  prevPageBtn: document.getElementById("prevPageBtn"),
-  nextPageBtn: document.getElementById("nextPageBtn"),
+  prevBtn: document.getElementById("prevBtn"),
+  nextBtn: document.getElementById("nextBtn"),
   pageLabel: document.getElementById("pageLabel"),
+  totalDepth: document.getElementById("totalDepth"),
+  langSelect: document.getElementById("langSelect"),
   renderBtn: document.getElementById("renderBtn"),
-  runOcrBtn: document.getElementById("runOcrBtn"),
+  roiType: document.getElementById("roiType"),
   toggleDrawBtn: document.getElementById("toggleDrawBtn"),
+  extractBtn: document.getElementById("extractBtn"),
   exportBtn: document.getElementById("exportBtn"),
-  clearManualBtn: document.getElementById("clearManualBtn"),
-  clearOcrBtn: document.getElementById("clearOcrBtn"),
+  clearRoiBtn: document.getElementById("clearRoiBtn"),
 
   zoomRange: document.getElementById("zoomRange"),
   zoomLabel: document.getElementById("zoomLabel"),
-
-  showOcrChk: document.getElementById("showOcrChk"),
-  showManualChk: document.getElementById("showManualChk"),
-  showTextChk: document.getElementById("showTextChk"),
+  showRoiChk: document.getElementById("showRoiChk"),
 
   statusText: document.getElementById("statusText"),
   progressBar: document.getElementById("progressBar"),
@@ -30,43 +28,38 @@ const els = {
   overlayCanvas: document.getElementById("overlayCanvas"),
 
   selType: document.getElementById("selType"),
-  selText: document.getElementById("selText"),
-  selDepth: document.getElementById("selDepth"),
   selX: document.getElementById("selX"),
   selY: document.getElementById("selY"),
   selW: document.getElementById("selW"),
   selH: document.getElementById("selH"),
   deleteBtn: document.getElementById("deleteBtn"),
-  bringFrontBtn: document.getElementById("bringFrontBtn"),
-  sendBackBtn: document.getElementById("sendBackBtn"),
 
-  ocrText: document.getElementById("ocrText"),
-  copyTextBtn: document.getElementById("copyTextBtn"),
-
-  ocrCount: document.getElementById("ocrCount"),
-  manualCount: document.getElementById("manualCount"),
+  outputText: document.getElementById("outputText"),
 };
 
 const pdfCtx = els.pdfCanvas.getContext("2d");
 const ovCtx = els.overlayCanvas.getContext("2d");
 
-// PDF state
 let pdfDoc = null;
 let pageNum = 1;
 let pageCount = 0;
 
-let renderScale = 2.2; // OCR quality vs speed
-let viewZoom = 1.2;    // CSS zoom
+let renderScale = 2.2; // rendering scale for OCR accuracy
+let viewZoom = 1.2;
 
-const pagesBoxes = new Map();
-let selectedId = null;
 let drawMode = false;
-
 let isDrawing = false;
 let drawStart = null;
 let tempRect = null;
 
+let selectedRoiId = null;
 let currentPdfObjectUrl = null;
+
+// ROIs per page: {header:{}, desc:{}, spt:{}}
+const pageRois = new Map();
+
+// extracted data per page
+const extractedByPage = new Map();
 
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -79,33 +72,20 @@ function setStatus(text, progress = null) {
   els.progressBar.style.width = `${pct}%`;
 }
 
-function enableUI(enabled) {
-  els.prevPageBtn.disabled = !enabled;
-  els.nextPageBtn.disabled = !enabled;
-  els.renderBtn.disabled = !enabled;
-  els.runOcrBtn.disabled = !enabled;
-  els.toggleDrawBtn.disabled = !enabled;
-  els.exportBtn.disabled = !enabled;
-  els.clearManualBtn.disabled = !enabled;
-  els.clearOcrBtn.disabled = !enabled;
-  els.copyTextBtn.disabled = !enabled;
-}
-
-function getBoxesForPage(n) {
-  if (!pagesBoxes.has(n)) pagesBoxes.set(n, []);
-  return pagesBoxes.get(n);
-}
-
-function updateCounts() {
-  const boxes = getBoxesForPage(pageNum);
-  els.ocrCount.textContent = String(boxes.filter(b => b.type === "ocr").length);
-  els.manualCount.textContent = String(boxes.filter(b => b.type === "manual").length);
+function enableUI(on) {
+  els.prevBtn.disabled = !on;
+  els.nextBtn.disabled = !on;
+  els.renderBtn.disabled = !on;
+  els.toggleDrawBtn.disabled = !on;
+  els.extractBtn.disabled = !on;
+  els.exportBtn.disabled = !on;
+  els.clearRoiBtn.disabled = !on;
 }
 
 function updatePageLabel() {
   els.pageLabel.textContent = `Page ${pageNum} / ${pageCount || "-"}`;
-  els.prevPageBtn.disabled = !pdfDoc || pageNum <= 1;
-  els.nextPageBtn.disabled = !pdfDoc || pageNum >= pageCount;
+  els.prevBtn.disabled = !pdfDoc || pageNum <= 1;
+  els.nextBtn.disabled = !pdfDoc || pageNum >= pageCount;
 }
 
 function setDrawMode(on) {
@@ -123,134 +103,18 @@ function setViewZoomFromUI() {
 }
 
 function applyCanvasZoom() {
-  const scale = viewZoom;
+  const s = viewZoom;
   els.pdfCanvas.style.transformOrigin = "top left";
   els.overlayCanvas.style.transformOrigin = "top left";
-  els.pdfCanvas.style.transform = `scale(${scale})`;
-  els.overlayCanvas.style.transform = `scale(${scale})`;
+  els.pdfCanvas.style.transform = `scale(${s})`;
+  els.overlayCanvas.style.transform = `scale(${s})`;
 
   const w = els.pdfCanvas.width;
   const h = els.pdfCanvas.height;
-  els.pdfCanvas.style.width = `${w * scale}px`;
-  els.pdfCanvas.style.height = `${h * scale}px`;
-  els.overlayCanvas.style.width = `${w * scale}px`;
-  els.overlayCanvas.style.height = `${h * scale}px`;
-}
-
-function selectBox(id) {
-  selectedId = id;
-  const boxes = getBoxesForPage(pageNum);
-  const b = boxes.find(x => x.id === id) || null;
-
-  const hasSel = !!b;
-  els.deleteBtn.disabled = !hasSel;
-  els.bringFrontBtn.disabled = !hasSel;
-  els.sendBackBtn.disabled = !hasSel;
-
-  if (!b) {
-    els.selType.value = "";
-    els.selText.value = "";
-    els.selDepth.value = 0;
-    els.selX.value = "";
-    els.selY.value = "";
-    els.selW.value = "";
-    els.selH.value = "";
-    redrawOverlay();
-    return;
-  }
-
-  els.selType.value = b.type;
-  els.selDepth.value = b.depth ?? 0;
-  els.selX.value = Math.round(b.rect.x);
-  els.selY.value = Math.round(b.rect.y);
-  els.selW.value = Math.round(b.rect.w);
-  els.selH.value = Math.round(b.rect.h);
-
-  els.selText.value = b.text ?? "";
-  els.selText.disabled = (b.type === "ocr");
-  redrawOverlay();
-}
-
-function getSortedBoxesForDraw() {
-  const boxes = getBoxesForPage(pageNum);
-  const showOCR = els.showOcrChk.checked;
-  const showManual = els.showManualChk.checked;
-  return boxes
-    .filter(b => (b.type === "ocr" ? showOCR : showManual))
-    .slice()
-    .sort((a, b) => (a.depth - b.depth));
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-
-function redrawOverlay() {
-  ovCtx.clearRect(0, 0, els.overlayCanvas.width, els.overlayCanvas.height);
-  for (const b of getSortedBoxesForDraw()) drawBox(b);
-  if (tempRect) drawTempRect(tempRect);
-}
-
-function drawBox(b) {
-  const sel = b.id === selectedId;
-  const { x, y, w, h } = b.rect;
-  const isOCR = b.type === "ocr";
-
-  ovCtx.save();
-  ovCtx.lineWidth = sel ? 3 : 2;
-
-  if (isOCR) {
-    ovCtx.strokeStyle = sel ? "rgba(255,255,255,0.95)" : "rgba(106,166,255,0.85)";
-    ovCtx.fillStyle = sel ? "rgba(106,166,255,0.22)" : "rgba(106,166,255,0.12)";
-  } else {
-    ovCtx.strokeStyle = sel ? "rgba(255,255,255,0.95)" : "rgba(86,240,179,0.85)";
-    ovCtx.fillStyle = sel ? "rgba(86,240,179,0.20)" : "rgba(86,240,179,0.10)";
-  }
-
-  roundRect(ovCtx, x, y, w, h, 6);
-  ovCtx.fill();
-  ovCtx.stroke();
-
-  if (els.showTextChk.checked) {
-    const label = (b.text || (isOCR ? "(word)" : "(manual)")).trim();
-    const tag = `d=${b.depth ?? 0}${isOCR && typeof b.conf === "number" ? ` c=${Math.round(b.conf)}` : ""}`;
-
-    ovCtx.font = "12px ui-monospace, Menlo, Consolas, monospace";
-    const pad = 6;
-    const text = `${label}  [${tag}]`;
-    const tw = ovCtx.measureText(text).width;
-
-    const bx = x;
-    const by = Math.max(0, y - 18);
-
-    ovCtx.fillStyle = "rgba(0,0,0,0.55)";
-    roundRect(ovCtx, bx, by, tw + pad * 2, 18, 8);
-    ovCtx.fill();
-
-    ovCtx.fillStyle = "rgba(233,238,255,0.95)";
-    ovCtx.fillText(text, bx + pad, by + 13);
-  }
-
-  ovCtx.restore();
-}
-
-function drawTempRect(r) {
-  ovCtx.save();
-  ovCtx.lineWidth = 2;
-  ovCtx.setLineDash([6, 5]);
-  ovCtx.strokeStyle = "rgba(255,255,255,0.9)";
-  ovCtx.fillStyle = "rgba(255,255,255,0.12)";
-  roundRect(ovCtx, r.x, r.y, r.w, r.h, 6);
-  ovCtx.fill();
-  ovCtx.stroke();
-  ovCtx.restore();
+  els.pdfCanvas.style.width = `${w * s}px`;
+  els.pdfCanvas.style.height = `${h * s}px`;
+  els.overlayCanvas.style.width = `${w * s}px`;
+  els.overlayCanvas.style.height = `${h * s}px`;
 }
 
 function clampRectToPage(r) {
@@ -272,15 +136,110 @@ function normalizeRect(a, b) {
   };
 }
 
-function hitTest(pt) {
-  const visible = getSortedBoxesForDraw();
-  for (let i = visible.length - 1; i >= 0; i--) {
-    const r = visible[i].rect;
-    if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
-      return visible[i].id;
-    }
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+function getRoisForPage(n) {
+  if (!pageRois.has(n)) pageRois.set(n, {});
+  return pageRois.get(n);
+}
+
+function setRoi(n, type, rect) {
+  const rois = getRoisForPage(n);
+  rois[type] = { id: uid(), type, rect };
+  pageRois.set(n, rois);
+}
+
+function deleteSelectedRoi() {
+  const rois = getRoisForPage(pageNum);
+  for (const k of Object.keys(rois)) {
+    if (rois[k]?.id === selectedRoiId) delete rois[k];
   }
-  return null;
+  selectedRoiId = null;
+  updateSelectedPanel(null);
+  redrawOverlay();
+}
+
+function updateSelectedPanel(roi) {
+  if (!roi) {
+    els.selType.value = "";
+    els.selX.value = "";
+    els.selY.value = "";
+    els.selW.value = "";
+    els.selH.value = "";
+    els.deleteBtn.disabled = true;
+    return;
+  }
+  els.selType.value = roi.type;
+  els.selX.value = Math.round(roi.rect.x);
+  els.selY.value = Math.round(roi.rect.y);
+  els.selW.value = Math.round(roi.rect.w);
+  els.selH.value = Math.round(roi.rect.h);
+  els.deleteBtn.disabled = false;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function drawROI(roi, isSelected) {
+  const { x, y, w, h } = roi.rect;
+  ovCtx.save();
+
+  const color = roi.type === "header"
+    ? "rgba(255, 215, 115, 0.85)"
+    : roi.type === "desc"
+      ? "rgba(106,166,255,0.85)"
+      : "rgba(86,240,179,0.85)";
+
+  ovCtx.lineWidth = isSelected ? 3 : 2;
+  ovCtx.strokeStyle = isSelected ? "rgba(255,255,255,0.95)" : color;
+  ovCtx.fillStyle = isSelected ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)";
+  roundRect(ovCtx, x, y, w, h, 10);
+  ovCtx.fill();
+  ovCtx.stroke();
+
+  ovCtx.font = "12px ui-monospace, Menlo, Consolas, monospace";
+  ovCtx.fillStyle = "rgba(0,0,0,0.55)";
+  const tag = roi.type.toUpperCase();
+  const tw = ovCtx.measureText(tag).width;
+  roundRect(ovCtx, x, Math.max(0, y - 18), tw + 12, 18, 8);
+  ovCtx.fill();
+  ovCtx.fillStyle = "rgba(233,238,255,0.95)";
+  ovCtx.fillText(tag, x + 6, Math.max(13, y - 5));
+
+  ovCtx.restore();
+}
+
+function redrawOverlay() {
+  ovCtx.clearRect(0, 0, els.overlayCanvas.width, els.overlayCanvas.height);
+  if (!els.showRoiChk.checked) return;
+
+  const rois = getRoisForPage(pageNum);
+  for (const key of ["header", "desc", "spt"]) {
+    if (!rois[key]) continue;
+    drawROI(rois[key], rois[key].id === selectedRoiId);
+  }
+
+  if (tempRect) {
+    ovCtx.save();
+    ovCtx.setLineDash([6, 5]);
+    ovCtx.lineWidth = 2;
+    ovCtx.strokeStyle = "rgba(255,255,255,0.9)";
+    ovCtx.fillStyle = "rgba(255,255,255,0.10)";
+    roundRect(ovCtx, tempRect.x, tempRect.y, tempRect.w, tempRect.h, 10);
+    ovCtx.fill();
+    ovCtx.stroke();
+    ovCtx.restore();
+  }
 }
 
 function getMousePagePos(evt) {
@@ -290,45 +249,29 @@ function getMousePagePos(evt) {
   return { x: xCss / viewZoom, y: yCss / viewZoom };
 }
 
-/* ---------------- PDF Load ---------------- */
+function hitTestROI(pt) {
+  const rois = getRoisForPage(pageNum);
+  const all = Object.values(rois).filter(Boolean);
+  for (let i = all.length - 1; i >= 0; i--) {
+    const r = all[i].rect;
+    if (pt.x >= r.x && pt.x <= r.x + r.w && pt.y >= r.y && pt.y <= r.y + r.h) {
+      return all[i];
+    }
+  }
+  return null;
+}
+
+// ---------- PDF LOAD/RENDER ----------
 
 async function loadPdfFromUrl(url) {
-  try {
-    setStatus("Loading PDF into PDF.js…", 0);
-
-    const loadingTask = pdfjsLib.getDocument({
-      url,
-      disableStream: true,
-      disableAutoFetch: true,
-    });
-
-    loadingTask.onProgress = (p) => {
-      if (p && p.total) {
-        const prog = p.loaded / p.total;
-        setStatus(`Loading PDF… ${Math.round(prog * 100)}%`, prog);
-      }
-    };
-
-    pdfDoc = await loadingTask.promise;
-    pageCount = pdfDoc.numPages;
-    pageNum = 1;
-
-    updatePageLabel();
-    setStatus(`PDF loaded (${pageCount} pages). Rendering page 1…`, 1);
-
-    enableUI(true);
-    els.renderBtn.disabled = false;
-    els.runOcrBtn.disabled = true;
-
-    els.ocrText.value = "";
-    selectedId = null;
-    setDrawMode(false);
-  } catch (err) {
-    console.error("PDF load failed:", err);
-    const msg = err?.message || String(err);
-    setStatus(`PDF load failed: ${msg}`, 0);
-    throw err;
-  }
+  setStatus("Loading PDF…", 0);
+  const task = pdfjsLib.getDocument({ url, disableStream: true, disableAutoFetch: true });
+  pdfDoc = await task.promise;
+  pageCount = pdfDoc.numPages;
+  pageNum = 1;
+  updatePageLabel();
+  enableUI(true);
+  setStatus(`PDF loaded (${pageCount} pages). Render page 1.`, 1);
 }
 
 async function renderPage() {
@@ -337,8 +280,6 @@ async function renderPage() {
   setStatus(`Rendering page ${pageNum}…`, 0);
 
   const page = await pdfDoc.getPage(pageNum);
-  renderScale = Math.max(1.8, Math.min(3.2, 2.1 + (viewZoom - 1.0)));
-
   const viewport = page.getViewport({ scale: renderScale });
 
   els.pdfCanvas.width = Math.floor(viewport.width);
@@ -349,125 +290,321 @@ async function renderPage() {
   pdfCtx.clearRect(0, 0, els.pdfCanvas.width, els.pdfCanvas.height);
   await page.render({ canvasContext: pdfCtx, viewport }).promise;
 
-  if (!pagesBoxes.has(pageNum)) pagesBoxes.set(pageNum, []);
-
   applyCanvasZoom();
-  updateCounts();
-  selectBox(selectedId);
+  redrawOverlay();
 
-  els.runOcrBtn.disabled = false;
+  els.extractBtn.disabled = false;
   els.exportBtn.disabled = false;
-  els.clearManualBtn.disabled = false;
-  els.clearOcrBtn.disabled = false;
-  els.copyTextBtn.disabled = false;
+  els.clearRoiBtn.disabled = false;
 
   setStatus(`Rendered page ${pageNum}.`, 1);
-  redrawOverlay();
 }
 
-/* ---------------- OCR ---------------- */
+// ---------- HEADER extraction via PDF text (ROI filter) ----------
+// Convert PDF text item transform to viewport pixel coords.
+function itemToViewportXY(item, viewport) {
+  // item.transform = [a,b,c,d,e,f], where e,f are text position in PDF space
+  const [a,b,c,d,e,f] = item.transform;
+  const pt = viewport.convertToViewportPoint(e, f);
+  return { x: pt[0], y: pt[1] };
+}
 
-async function runOCRThisPage() {
-  if (!pdfDoc) return;
-  if (els.pdfCanvas.width === 0 || els.pdfCanvas.height === 0) await renderPage();
+function parseHeaderFromText(fullText) {
+  // Flexible regex: depends on your PDF format.
+  const nameMatch = fullText.match(/\bB\d+\-\d+\b/);
+  const latMatch = fullText.match(/LATITUDE:\s*([-\d.]+)/i);
+  const lonMatch = fullText.match(/LONGITUDE:\s*([-\d.]+)/i);
+  const elevMatch = fullText.match(/ELEVATION:\s*([-\d.]+)\s*feet/i);
 
-  const lang = els.langSelect.value;
-  setStatus("Initializing OCR…", 0);
-  els.runOcrBtn.disabled = true;
+  // Water table: try to find "DEPTH TO - WATER"
+  // We'll capture numbers if present.
+  let waterInitial = null;
+  let water24 = null;
+  const waterLine = fullText.match(/DEPTH TO\s*-\s*WATER[^]*?(INITIAL[^]*?)(AFTER\s*24[^]*?)?/i);
+  if (waterLine) {
+    const nums = fullText.match(/DEPTH TO\s*-\s*WATER[^]*?([0-9]+(\.[0-9]+)?)/i);
+    if (nums) waterInitial = Number(nums[1]);
+  }
+  // If your PDF has explicit "AFTER 24 HOURS" values, you can improve regex later.
 
-  const boxes = getBoxesForPage(pageNum);
-  for (let i = boxes.length - 1; i >= 0; i--) {
-    if (boxes[i].type === "ocr") boxes.splice(i, 1);
+  return {
+    name: nameMatch ? nameMatch[0] : null,
+    latitude: latMatch ? Number(latMatch[1]) : null,
+    longitude: lonMatch ? Number(lonMatch[1]) : null,
+    elevation_ft: elevMatch ? Number(elevMatch[1]) : null,
+    water_table: { initial_ft: waterInitial, after_24h_ft: water24 }
+  };
+}
+
+async function extractHeader(page, viewport, headerROI) {
+  const tc = await page.getTextContent();
+  const items = tc.items || [];
+  const parts = [];
+
+  for (const it of items) {
+    const s = (it.str || "").trim();
+    if (!s) continue;
+    const { x, y } = itemToViewportXY(it, viewport);
+
+    // Note: y in viewport has origin top-left (PDF.js viewport)
+    if (
+      x >= headerROI.x && x <= headerROI.x + headerROI.w &&
+      y >= headerROI.y && y <= headerROI.y + headerROI.h
+    ) {
+      parts.push(s);
+    }
   }
 
-  updateCounts();
-  redrawOverlay();
+  const text = parts.join(" ");
+  return parseHeaderFromText(text);
+}
 
-  try {
-    const result = await Tesseract.recognize(els.pdfCanvas, lang, {
-      logger: (m) => {
-        if (m.status === "recognizing text") {
-          setStatus(`OCR: ${Math.round((m.progress || 0) * 100)}%`, m.progress || 0);
-        } else {
-          setStatus(`OCR: ${m.status}`, null);
-        }
-      },
+// ---------- Horizontal line detection inside DESCRIPTION ROI ----------
+
+function detectHorizontalLinesInROI(canvas, roi, opts = {}) {
+  const ctx = canvas.getContext("2d");
+  const { x, y, w, h } = roi;
+
+  const {
+    inkThreshold = 170, // lower = stricter black
+    rowInkRatio = 0.45, // fraction of row that must be ink to count
+    minGapPx = 10
+  } = opts;
+
+  const img = ctx.getImageData(Math.floor(x), Math.floor(y), Math.floor(w), Math.floor(h));
+  const data = img.data;
+  const W = img.width;
+  const H = img.height;
+
+  const candidates = [];
+
+  for (let row = 0; row < H; row++) {
+    let ink = 0;
+    for (let col = 0; col < W; col++) {
+      const i = (row * W + col) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+      if (a < 10) continue;
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum < inkThreshold) ink++;
+    }
+    const ratio = ink / W;
+    if (ratio >= rowInkRatio) candidates.push(row);
+  }
+
+  // merge consecutive rows
+  const merged = [];
+  let start = null;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const r = candidates[i];
+    const prev = i ? candidates[i - 1] : null;
+    if (start === null) start = r;
+
+    if (prev !== null && r !== prev + 1) {
+      const mid = Math.round((start + prev) / 2);
+      merged.push(mid);
+      start = r;
+    }
+  }
+  if (start !== null && candidates.length) {
+    const end = candidates[candidates.length - 1];
+    merged.push(Math.round((start + end) / 2));
+  }
+
+  merged.sort((a, b) => a - b);
+  const filtered = [];
+  for (const ly of merged) {
+    if (!filtered.length || (ly - filtered[filtered.length - 1]) >= minGapPx) filtered.push(ly);
+  }
+
+  // ROI-local -> page y
+  return filtered.map(ly => y + ly);
+}
+
+function yToDepthFt(y, descROI, totalDepthFt) {
+  const t = (y - descROI.y) / descROI.h;
+  const clamped = Math.max(0, Math.min(1, t));
+  return clamped * totalDepthFt;
+}
+
+function buildLayerIntervals(descROI, lineYs, totalDepthFt) {
+  const ys = lineYs.slice().sort((a, b) => a - b);
+  const depths = ys.map(y => yToDepthFt(y, descROI, totalDepthFt));
+
+  const layers = [];
+  let from = 0;
+
+  for (const d of depths) {
+    if (d - from >= 0.10) {
+      layers.push({ from_ft: round2(from), to_ft: round2(d), description: "" });
+      from = d;
+    }
+  }
+  if (totalDepthFt - from >= 0.10) {
+    layers.push({ from_ft: round2(from), to_ft: round2(totalDepthFt), description: "" });
+  }
+  return layers;
+}
+
+// ---------- OCR helpers ----------
+
+function cropCanvas(srcCanvas, rect) {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.floor(rect.w));
+  c.height = Math.max(1, Math.floor(rect.h));
+  const ctx = c.getContext("2d");
+  ctx.drawImage(
+    srcCanvas,
+    rect.x, rect.y, rect.w, rect.h,
+    0, 0, c.width, c.height
+  );
+  return c;
+}
+
+// OCR description per layer interval (crop inside descROI)
+async function ocrLayersFromDescROI(descROI, layers, lang) {
+  const results = [];
+
+  for (let i = 0; i < layers.length; i++) {
+    const L = layers[i];
+
+    // map depth interval back to y pixels inside descROI
+    const y1 = descROI.y + (L.from_ft / Number(els.totalDepth.value)) * descROI.h;
+    const y2 = descROI.y + (L.to_ft / Number(els.totalDepth.value)) * descROI.h;
+
+    const rect = clampRectToPage({
+      x: descROI.x,
+      y: Math.floor(y1),
+      w: descROI.w,
+      h: Math.max(2, Math.floor(y2 - y1))
     });
 
-    const words = (result?.data?.words || []).filter(w => (w?.bbox && w.text && w.text.trim().length));
-    for (const w of words) {
-      const x0 = w.bbox.x0, y0 = w.bbox.y0, x1 = w.bbox.x1, y1 = w.bbox.y1;
-      boxes.push({
-        id: uid(),
-        type: "ocr",
-        rect: clampRectToPage({ x: x0, y: y0, w: x1 - x0, h: y1 - y0 }),
-        text: w.text,
-        conf: w.confidence,
-        depth: 0,
-      });
-    }
+    setStatus(`OCR description layer ${i + 1}/${layers.length} (${L.from_ft}-${L.to_ft} ft)…`, i / layers.length);
 
-    els.ocrText.value = (result?.data?.text || "").trim();
-    setStatus(`OCR done. Found ${words.length} word boxes on page ${pageNum}.`, 1);
+    const crop = cropCanvas(els.pdfCanvas, rect);
+    const res = await Tesseract.recognize(crop, lang);
+    const text = (res?.data?.text || "").trim().replace(/\s+\n/g, "\n");
 
-    updateCounts();
-    redrawOverlay();
-  } catch (err) {
-    console.error(err);
-    setStatus(`OCR failed: ${err?.message || String(err)}`, 0);
-  } finally {
-    els.runOcrBtn.disabled = false;
+    results.push({
+      from_ft: L.from_ft,
+      to_ft: L.to_ft,
+      description: text
+    });
   }
+
+  setStatus("Description OCR done.", 1);
+  return results;
 }
 
-/* ---------------- Export/Clear ---------------- */
+// OCR SPT ROI and convert each number's y to depth
+async function extractSPTFromROI(sptROI, descROI, totalDepthFt, lang) {
+  setStatus("OCR SPT column…", 0);
 
-function exportJSONPage() {
+  const crop = cropCanvas(els.pdfCanvas, sptROI);
+  const res = await Tesseract.recognize(crop, lang);
+
+  const words = (res?.data?.words || [])
+    .filter(w => w.text && w.text.trim())
+    .map(w => {
+      const cleaned = w.text.trim().replace(/[^\d]/g, ""); // digits only
+      const n = cleaned.length ? Number(cleaned) : null;
+      const yMid = (w.bbox.y0 + w.bbox.y1) / 2;
+      return { n, yCropMid: yMid };
+    })
+    .filter(x => Number.isFinite(x.n));
+
+  const spt = words.map(w => {
+    const pageY = sptROI.y + w.yCropMid;
+    const depth_ft = round2(yToDepthFt(pageY, descROI, totalDepthFt));
+    return { depth_ft, n: w.n };
+  });
+
+  // sort and lightly dedupe (same depth -> keep first)
+  spt.sort((a, b) => a.depth_ft - b.depth_ft);
+  const out = [];
+  const seen = new Set();
+  for (const p of spt) {
+    const key = `${p.depth_ft}-${p.n}`;
+    if (!seen.has(key)) { seen.add(key); out.push(p); }
+  }
+
+  setStatus(`SPT OCR done. Found ${out.length} values.`, 1);
+  return out;
+}
+
+// ---------- Main extraction ----------
+
+async function extractThisPage() {
   if (!pdfDoc) return;
-  const boxes = getBoxesForPage(pageNum);
+
+  const rois = getRoisForPage(pageNum);
+  if (!rois.header || !rois.desc || !rois.spt) {
+    setStatus("Please draw HEADER + DESCRIPTION + SPT ROIs first.", 0);
+    return;
+  }
+
+  const totalDepthFt = Number(els.totalDepth.value) || 36;
+  const lang = els.langSelect.value;
+
+  setStatus("Preparing extraction…", 0);
+
+  // Get page + viewport matching the rendered canvas scale
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({ scale: renderScale });
+
+  // 1) HEADER from PDF text inside header ROI
+  setStatus("Extracting header (PDF text)…", 0.1);
+  const header = await extractHeader(page, viewport, rois.header.rect);
+
+  // 2) LAYERS from horizontal lines + OCR description
+  setStatus("Detecting description divider lines…", 0.2);
+  const lineYs = detectHorizontalLinesInROI(els.pdfCanvas, rois.desc.rect, {
+    inkThreshold: 170,
+    rowInkRatio: 0.45,
+    minGapPx: 10
+  });
+
+  const layerIntervals = buildLayerIntervals(rois.desc.rect, lineYs, totalDepthFt);
+
+  // OCR layer text
+  const layers = await ocrLayersFromDescROI(rois.desc.rect, layerIntervals, lang);
+
+  // 3) SPT table (depth + N) independent
+  const spt = await extractSPTFromROI(rois.spt.rect, rois.desc.rect, totalDepthFt, lang);
 
   const payload = {
     page: pageNum,
-    pageCount,
-    render: { width: els.pdfCanvas.width, height: els.pdfCanvas.height, renderScale, viewZoom },
-    ocrText: els.ocrText.value || "",
-    boxes: boxes.map(b => ({
-      id: b.id,
-      type: b.type,
-      text: b.text ?? "",
-      conf: typeof b.conf === "number" ? b.conf : null,
-      depth: b.depth ?? 0,
-      rect: { ...b.rect },
-    })),
+    boring: header,
+    total_depth_ft: totalDepthFt,
+    layers,
+    spt
   };
 
+  extractedByPage.set(pageNum, payload);
+  els.outputText.value = JSON.stringify(payload, null, 2);
+  setStatus("Extraction complete. You can export JSON.", 1);
+}
+
+// ---------- Export ----------
+
+function exportJSONPage() {
+  const payload = extractedByPage.get(pageNum);
+  if (!payload) {
+    setStatus("Nothing extracted yet. Click Extract (this page).", 0);
+    return;
+  }
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `page_${pageNum}_ocr_boxes.json`;
+  a.download = `page_${pageNum}_borelog.json`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
 }
 
-function clearManualPage() {
-  const boxes = getBoxesForPage(pageNum);
-  for (let i = boxes.length - 1; i >= 0; i--) if (boxes[i].type === "manual") boxes.splice(i, 1);
-  updateCounts();
-  redrawOverlay();
-}
-
-function clearOcrPage() {
-  const boxes = getBoxesForPage(pageNum);
-  for (let i = boxes.length - 1; i >= 0; i--) if (boxes[i].type === "ocr") boxes.splice(i, 1);
-  els.ocrText.value = "";
-  updateCounts();
-  redrawOverlay();
-}
-
-/* ---------------- Events ---------------- */
+// ---------- Events ----------
 
 els.pdfInput.addEventListener("change", async (e) => {
   const file = e.target.files?.[0];
@@ -478,90 +615,94 @@ els.pdfInput.addEventListener("change", async (e) => {
     currentPdfObjectUrl = URL.createObjectURL(file);
 
     await loadPdfFromUrl(currentPdfObjectUrl);
+    els.renderBtn.disabled = false;
     await renderPage();
-  } catch {
-    // status already shown
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to load PDF: ${err?.message || String(err)}`, 0);
   }
 });
 
-els.prevPageBtn.addEventListener("click", async () => {
+els.prevBtn.addEventListener("click", async () => {
   if (!pdfDoc || pageNum <= 1) return;
-  pageNum -= 1;
+  pageNum--;
   updatePageLabel();
-  selectedId = null;
-  els.ocrText.value = "";
+  els.outputText.value = extractedByPage.get(pageNum) ? JSON.stringify(extractedByPage.get(pageNum), null, 2) : "";
   await renderPage();
 });
 
-els.nextPageBtn.addEventListener("click", async () => {
+els.nextBtn.addEventListener("click", async () => {
   if (!pdfDoc || pageNum >= pageCount) return;
-  pageNum += 1;
+  pageNum++;
   updatePageLabel();
-  selectedId = null;
-  els.ocrText.value = "";
+  els.outputText.value = extractedByPage.get(pageNum) ? JSON.stringify(extractedByPage.get(pageNum), null, 2) : "";
   await renderPage();
 });
 
 els.renderBtn.addEventListener("click", renderPage);
-els.runOcrBtn.addEventListener("click", runOCRThisPage);
 els.toggleDrawBtn.addEventListener("click", () => setDrawMode(!drawMode));
-els.exportBtn.addEventListener("click", exportJSONPage);
-els.clearManualBtn.addEventListener("click", clearManualPage);
-els.clearOcrBtn.addEventListener("click", clearOcrPage);
-
 els.zoomRange.addEventListener("input", setViewZoomFromUI);
-els.showOcrChk.addEventListener("change", redrawOverlay);
-els.showManualChk.addEventListener("change", redrawOverlay);
-els.showTextChk.addEventListener("change", redrawOverlay);
+els.showRoiChk.addEventListener("change", redrawOverlay);
 
-els.copyTextBtn.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(els.ocrText.value || "");
-    setStatus("Copied OCR text to clipboard.", null);
-  } catch {
-    setStatus("Copy failed (browser blocked clipboard).", null);
-  }
+els.extractBtn.addEventListener("click", extractThisPage);
+els.exportBtn.addEventListener("click", exportJSONPage);
+
+els.clearRoiBtn.addEventListener("click", () => {
+  pageRois.set(pageNum, {});
+  selectedRoiId = null;
+  updateSelectedPanel(null);
+  redrawOverlay();
+  setStatus("Cleared ROIs for this page.", 0);
 });
 
-/* ---- overlay mouse ---- */
+els.deleteBtn.addEventListener("click", deleteSelectedRoi);
 
+// Drawing / selecting ROIs on overlay
 els.overlayCanvas.addEventListener("mousedown", (evt) => {
   if (!pdfDoc) return;
   const pt = getMousePagePos(evt);
 
-  if (drawMode) {
-    isDrawing = true;
-    drawStart = pt;
-    tempRect = { x: pt.x, y: pt.y, w: 1, h: 1 };
+  if (!drawMode) {
+    const hit = hitTestROI(pt);
+    selectedRoiId = hit ? hit.id : null;
+    updateSelectedPanel(hit);
     redrawOverlay();
     return;
   }
 
-  selectBox(hitTest(pt));
+  isDrawing = true;
+  drawStart = pt;
+  tempRect = { x: pt.x, y: pt.y, w: 1, h: 1 };
+  redrawOverlay();
 });
 
 els.overlayCanvas.addEventListener("mousemove", (evt) => {
-  if (!pdfDoc || !isDrawing) return;
-  tempRect = clampRectToPage(normalizeRect(drawStart, getMousePagePos(evt)));
+  if (!isDrawing) return;
+  const pt = getMousePagePos(evt);
+  tempRect = clampRectToPage(normalizeRect(drawStart, pt));
   redrawOverlay();
 });
 
 els.overlayCanvas.addEventListener("mouseup", () => {
-  if (!pdfDoc || !isDrawing) return;
+  if (!isDrawing) return;
   isDrawing = false;
 
   const r = tempRect;
   tempRect = null;
   drawStart = null;
 
-  if (r && r.w >= 8 && r.h >= 8) {
-    const boxes = getBoxesForPage(pageNum);
-    boxes.push({ id: uid(), type: "manual", rect: r, text: "manual", conf: null, depth: 1 });
-    updateCounts();
+  if (!r || r.w < 10 || r.h < 10) {
     redrawOverlay();
-  } else {
-    redrawOverlay();
+    return;
   }
+
+  const type = els.roiType.value;
+  setRoi(pageNum, type, r);
+
+  const rois = getRoisForPage(pageNum);
+  selectedRoiId = rois[type].id;
+  updateSelectedPanel(rois[type]);
+  redrawOverlay();
 });
 
 els.overlayCanvas.addEventListener("mouseleave", () => {
@@ -573,8 +714,7 @@ els.overlayCanvas.addEventListener("mouseleave", () => {
   }
 });
 
-/* ---- init ---- */
-
+// ---------- init ----------
 enableUI(false);
 setDrawMode(false);
 setViewZoomFromUI();
